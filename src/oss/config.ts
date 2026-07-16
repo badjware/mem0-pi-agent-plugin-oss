@@ -5,7 +5,7 @@ import type { Mem0Config, DreamConfig } from "../types.ts";
 
 const AGENT_ROOT = path.join(os.homedir(), ".pi", "agent");
 export const CONFIG_DIR = AGENT_ROOT;
-const CONFIG_PATH = path.join(AGENT_ROOT, "mem0-config.json");
+export const CONFIG_PATH = path.join(AGENT_ROOT, "mem0-oss-config.json");
 
 const DEFAULT_DREAM: DreamConfig = {
   enabled: true,
@@ -16,7 +16,6 @@ const DEFAULT_DREAM: DreamConfig = {
 };
 
 const DEFAULT_CONFIG: Mem0Config = {
-  apiKey: "",
   userId: "",
   autoCapture: true,
   defaultScope: "project",
@@ -25,6 +24,12 @@ const DEFAULT_CONFIG: Mem0Config = {
   dream: DEFAULT_DREAM,
 };
 
+/**
+ * Load the OSS plugin config from ~/.pi/agent/mem0-oss-config.json, merged with
+ * defaults. Malformed JSON is swallowed and defaults are used, matching upstream
+ * behavior. Missing `oss.llm.model` is not caught here; runtime activation is
+ * what fails fast when the model cannot be resolved.
+ */
 export function loadConfig(): Mem0Config {
   let fileConfig: Partial<Mem0Config> = {};
 
@@ -48,11 +53,14 @@ export function loadConfig(): Mem0Config {
     dream,
   };
 
-  if (process.env.MEM0_API_KEY) {
-    config.apiKey = process.env.MEM0_API_KEY;
-  }
   if (process.env.MEM0_USER_ID) {
     config.userId = process.env.MEM0_USER_ID;
+  }
+  if (process.env.MEM0_OSS_LLM_MODEL) {
+    config.oss = {
+      ...(config.oss ?? {}),
+      llm: { model: process.env.MEM0_OSS_LLM_MODEL },
+    };
   }
 
   return config;

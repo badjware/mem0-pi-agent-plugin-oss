@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import MemoryClient from "mem0ai";
-import { loadConfig, CONFIG_DIR } from "./config/index.ts";
+import { loadConfig, CONFIG_DIR } from "./oss/config.ts";
 import { detectAppId, detectRunId, resolveSearchFilters } from "./memory/scoping.ts";
 import { formatMemoryList } from "./memory/formatting.ts";
 import { registerMemoryTool } from "./memory/tools.ts";
@@ -16,9 +15,13 @@ import {
   releaseDreamLock,
   recordDreamCompletion,
 } from "./dream/index.ts";
-import { captureEvent } from "./telemetry.ts";
+import { RuntimeHolder, makeLazyClient } from "./oss/runtime.ts";
+import { activateRuntime } from "./oss/activate.ts";
+import { Prefetch } from "./oss/prefetch.ts";
 import * as os from "node:os";
 import type { ScopeContext } from "./types.ts";
+
+const RECALL_TIMEOUT_MS = 1500;
 
 export function resolveUserId(configUserId: string): string {
   if (configUserId) return configUserId;
@@ -28,39 +31,25 @@ export function resolveUserId(configUserId: string): string {
 }
 
 /**
- * Build the auto-recall context block for a turn: search memory with the user's
- * prompt and format the top matches so they are guaranteed in context instead of
- * relying on the agent to call the tool. Best-effort — returns "" when disabled,
- * the prompt is blank, nothing matches, or the search fails; it must never block
- * the turn.
+ * Build the auto-recall context block for a turn from a prefetched search
+ * result. Best-effort — returns "" when disabled, the prompt is blank, or
+ * nothing matches; must never block the turn.
  */
-export async function buildRecallContext(
-  prompt: string,
+export function formatRecallContext(
   enabled: boolean,
-  search: (query: string) => Promise<{ results?: unknown[] }>,
-): Promise<string> {
+  memories: unknown[],
+): string {
   if (!enabled) return "";
-  const q = prompt.trim();
-  if (!q) return "";
-  try {
-    const res = await search(q);
-    const memories = (res.results ?? []) as Parameters<typeof formatMemoryList>[0];
-    if (memories.length === 0) return "";
-    return `<mem0-relevant-memories>\nRetrieved automatically for the current request. This is a shallow first pass — search mem0_memory for more if you need it.\n${formatMemoryList(memories)}\n</mem0-relevant-memories>`;
-  } catch {
-    return "";
-  }
+  const list = memories as Parameters<typeof formatMemoryList>[0];
+  if (list.length === 0) return "";
+  return `<mem0-relevant-memories>\nRetrieved automatically for the current request. This is a shallow first pass — search mem0_memory for more if you need it.\n${formatMemoryList(list)}\n</mem0-relevant-memories>`;
 }
 
 export default function mem0Extension(pi: ExtensionAPI): void {
   const config = loadConfig();
 
-  if (!config.apiKey) {
-    console.warn("[mem0] No API key found. Set MEM0_API_KEY or add apiKey to ~/.pi/agent/mem0-config.json. Extension disabled.");
-    return;
-  }
-
-  const mem0 = new MemoryClient({ apiKey: config.apiKey });
+  const holder = new RuntimeHolder();
+  const mem0 = makeLazyClient(holder);
 
   const scopeCtx: ScopeContext = {
     userId: resolveUserId(config.userId),
@@ -72,35 +61,49 @@ export default function mem0Extension(pi: ExtensionAPI): void {
     return scopeCtx;
   }
 
-  const telemetryCtx = { apiKey: config.apiKey };
+  // Registration uses the lazy client. When the runtime is inactive, calls
+  // reject with a clear reason; commands guard on holder.isActive() and the
+  // tool surfaces the reason as a tool error.
+  registerMemoryTool(pi, mem0, config, getScopeCtx);
+  registerCommands(pi, mem0, config, getScopeCtx, holder);
+  setupAutoCapture(pi, mem0, config, getScopeCtx, holder);
 
-  // ── Register tool + commands + auto-capture ─────────────────────────
-  registerMemoryTool(pi, mem0, config, getScopeCtx, telemetryCtx);
-  registerCommands(pi, mem0, config, getScopeCtx, telemetryCtx);
-  setupAutoCapture(pi, mem0, config, getScopeCtx, telemetryCtx);
+  const recallPrefetch = new Prefetch<any[]>();
 
-  captureEvent("pi.plugin.registered", {
-    auto_capture: config.autoCapture,
-    dream_enabled: config.dream.enabled,
-    default_scope: config.defaultScope,
-  }, telemetryCtx);
+  // ── input: kick off recall search early so we can race it later ──────
+  pi.on("input", async (event) => {
+    if (!config.contextInjection || !holder.isActive()) return;
+    const prompt = event.text?.trim?.() ?? "";
+    if (!prompt) return;
+    recallPrefetch.queue(async () => {
+      const res = await mem0.search(prompt, {
+        filters: resolveSearchFilters("project", scopeCtx),
+        threshold: config.searchThreshold,
+      });
+      return res.results ?? [];
+    });
+  });
 
-  // ── session_start: detect project + session, reconstruct scope ──────
+  // ── session_start: detect project + session, construct OSS runtime ───
   pi.on("session_start", async (_event, ctx) => {
     scopeCtx.appId = detectAppId(ctx.cwd);
-
     const sessionFile = ctx.sessionManager?.getSessionFile?.();
     scopeCtx.runId = detectRunId(sessionFile);
+    if (config.userId) scopeCtx.userId = config.userId;
 
-    if (config.userId) {
-      scopeCtx.userId = config.userId;
+    try {
+      const runtime = await activateRuntime(config, ctx.modelRegistry);
+      holder.setActive(runtime);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      holder.setInactive(reason);
+      ctx.ui.notify(`[mem0] runtime inactive: ${reason}`, "error");
+      return;
     }
 
     if (config.dream.enabled) {
       incrementSessionCount(CONFIG_DIR, scopeCtx.runId);
     }
-
-    captureEvent("pi.session.start", {}, telemetryCtx);
   });
 
   // ── before_agent_start: append memory policy + auto-dream trigger ───
@@ -110,16 +113,19 @@ export default function mem0Extension(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, _ctx) => {
     let extra = MEMORY_POLICY;
 
-    // Guaranteed retrieval: prefetch memories relevant to this prompt so the
-    // agent always has them, rather than depending on it to call the tool.
-    const recall = await buildRecallContext(
-      event.prompt ?? "",
-      config.contextInjection,
-      (q) => mem0.search(q, { filters: resolveSearchFilters("project", scopeCtx) }),
-    );
-    if (recall) extra += "\n\n" + recall;
+    if (holder.isActive()) {
+      const memories = await recallPrefetch.consume(RECALL_TIMEOUT_MS, []);
+      const recall = formatRecallContext(config.contextInjection, memories);
+      if (recall) extra += "\n\n" + recall;
+    }
 
-    if (config.dream.enabled && config.dream.auto && !dreamTriggered && !dreamChecked) {
+    if (
+      holder.isActive() &&
+      config.dream.enabled &&
+      config.dream.auto &&
+      !dreamTriggered &&
+      !dreamChecked
+    ) {
       const gates = checkCheapGates(CONFIG_DIR, config.dream);
       if (gates.proceed) {
         try {
@@ -132,7 +138,6 @@ export default function mem0Extension(pi: ExtensionAPI): void {
           if (memGate.pass && acquireDreamLock(CONFIG_DIR)) {
             dreamTriggered = true;
             extra += "\n\n" + DREAM_PROTOCOL;
-            captureEvent("pi.dream.triggered", { memory_count: count }, telemetryCtx);
           }
         } catch {
           // Transient error — retry next turn
@@ -163,7 +168,6 @@ export default function mem0Extension(pi: ExtensionAPI): void {
 
     if (hadWriteAction) {
       recordDreamCompletion(CONFIG_DIR);
-      captureEvent("pi.dream.completed", {}, telemetryCtx);
     }
 
     releaseDreamLock(CONFIG_DIR);
@@ -172,7 +176,6 @@ export default function mem0Extension(pi: ExtensionAPI): void {
 
   // ── session_shutdown: release dream lock if still held ──────────────
   pi.on("session_shutdown", async () => {
-    captureEvent("pi.session.stop", {}, telemetryCtx);
     if (dreamTriggered) {
       releaseDreamLock(CONFIG_DIR);
       dreamTriggered = false;

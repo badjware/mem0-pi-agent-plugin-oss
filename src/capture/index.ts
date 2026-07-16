@@ -3,7 +3,7 @@ import type MemoryClient from "mem0ai";
 import type { Mem0Config, ScopeContext } from "../types.ts";
 import { DEFAULT_CUSTOM_CATEGORIES } from "../types.ts";
 import { resolveAddParams } from "../memory/scoping.ts";
-import { captureEvent } from "../telemetry.ts";
+import type { RuntimeHolder } from "../oss/runtime.ts";
 
 interface MessageLike {
   role: string;
@@ -41,11 +41,12 @@ export function setupAutoCapture(
   mem0: MemoryClient,
   config: Mem0Config,
   getScopeCtx: () => ScopeContext,
-  telemetryCtx?: { apiKey?: string },
+  holder: RuntimeHolder,
 ): void {
   if (!config.autoCapture) return;
 
-  pi.on("agent_end", async (event) => {
+  pi.on("agent_end", (event) => {
+    if (!holder.isActive()) return;
     const messages = event.messages ?? [];
     const conversation = extractConversation(messages);
     if (conversation.length === 0) return;
@@ -53,18 +54,15 @@ export function setupAutoCapture(
     const scopeCtx = getScopeCtx();
     const addParams = resolveAddParams("project", scopeCtx);
 
-    try {
-      await mem0.add(conversation, {
+    // Fire-and-forget: mem0.add runs an LLM round-trip that would otherwise
+    // block the next prompt for several seconds against a local OSS runtime.
+    mem0
+      .add(conversation, {
         ...addParams,
         customCategories: DEFAULT_CUSTOM_CATEGORIES,
+      })
+      .catch((err: unknown) => {
+        console.error("[mem0] auto-capture failed:", err);
       });
-      captureEvent("pi.capture.auto", { success: true, message_count: conversation.length }, telemetryCtx);
-    } catch (err: unknown) {
-      captureEvent("pi.capture.auto", {
-        success: false,
-        error_type: err instanceof Error ? err.name : "unknown",
-      }, telemetryCtx);
-      console.error("[mem0] auto-capture failed:", err);
-    }
   });
 }

@@ -1,13 +1,12 @@
 {
-  "name": "@mem0/pi-agent-plugin",
-  "version": "0.1.3",
+  "name": "@badjware/mem0-pi-agent-plugin-oss",
+  "version": "0.1.0",
   "type": "module",
-  "description": "Mem0 memory extension for Pi Agent persistent, scoped, semantic memory across sessions and projects",
+  "description": "Local-only fork of @mem0/pi-agent-plugin with no cloud dependency",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mem0ai/mem0",
-    "directory": "integrations/pi-agent-plugin"
+    "url": "https://github.com/badjware/mem0-pi-agent-plugin-oss"
   },
   "keywords": [
     "pi-package",
@@ -66,7 +65,9 @@
     "vitest": "^4.1.7"
   },
   "dependencies": {
-    "mem0ai": "^3.0.7"
+    "mem0ai": "^3.1.0",
+    "fastembed": "^2.1.0",
+    "better-sqlite3": "^12.6.2"
   },
   "pnpm": {
     "overrides": {

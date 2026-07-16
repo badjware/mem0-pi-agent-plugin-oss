@@ -6,8 +6,8 @@ import { resolveSearchFilters, resolveAddParams } from "./memory/scoping.ts";
 import { formatMemoryList, formatMemoryCompact, groupByCategory } from "./memory/formatting.ts";
 import { DREAM_PROTOCOL } from "./dream/prompt.ts";
 import { acquireDreamLock } from "./dream/index.ts";
-import { CONFIG_DIR } from "./config/index.ts";
-import { captureCommandEvent } from "./telemetry.ts";
+import { CONFIG_DIR } from "./oss/config.ts";
+import type { RuntimeHolder } from "./oss/runtime.ts";
 
 const SEARCH_TOP_K = 10;
 
@@ -16,10 +16,16 @@ export function registerCommands(
   mem0: MemoryClient,
   config: Mem0Config,
   getScopeCtx: () => ScopeContext,
-  telemetryCtx?: { apiKey?: string },
+  holder: RuntimeHolder,
 ): void {
   const sendFeedback = (customType: string, content: string): void => {
     pi.sendMessage({ customType, content, display: true });
+  };
+
+  const requireActive = (ctx: { ui: { notify: (m: string, level?: "error" | "info" | "warning") => void } }): boolean => {
+    if (holder.isActive()) return true;
+    ctx.ui.notify(`[mem0] runtime inactive: ${holder.reason()}`, "error");
+    return false;
   };
 
   const pluralize = (n: number, one: string, many: string): string =>
@@ -44,13 +50,13 @@ export function registerCommands(
         ctx.ui.notify("Usage: /mem0-remember <text>", "warning");
         return;
       }
+      if (!requireActive(ctx)) return;
 
       const addParams = resolveAddParams(config.defaultScope, getScopeCtx());
       const result = await mem0.add(
         [{ role: "user", content: text }],
         { ...addParams, customCategories: DEFAULT_CUSTOM_CATEGORIES, infer: false },
       );
-      captureCommandEvent("mem0-remember", {}, telemetryCtx);
 
       const storedItems = (Array.isArray(result) ? result : [])
         .map((m) => (m as { memory?: string }).memory)
@@ -71,17 +77,16 @@ export function registerCommands(
         ctx.ui.notify("Usage: /mem0-forget <query>", "warning");
         return;
       }
+      if (!requireActive(ctx)) return;
 
       const memories = await searchMemories(query, config.defaultScope);
 
       if (memories.length === 0) {
-        captureCommandEvent("mem0-forget", { result_count: 0 }, telemetryCtx);
         sendFeedback("mem0-forget", `**No matches for "${query}"** — nothing to forget.`);
         return;
       }
 
       const forgotten = (mem: Parameters<typeof formatMemoryCompact>[0]) => {
-        captureCommandEvent("mem0-forget", { deleted_count: 1 }, telemetryCtx);
         sendFeedback(
           "mem0-forget",
           [`**Forgotten from ${config.defaultScope} memory**`, `- ${formatMemoryCompact(mem)}`].join("\n"),
@@ -125,9 +130,9 @@ export function registerCommands(
         ctx.ui.notify("Usage: /mem0-search <query>", "warning");
         return;
       }
+      if (!requireActive(ctx)) return;
 
       const memories = await searchMemories(query, config.defaultScope);
-      captureCommandEvent("mem0-search", { result_count: memories.length }, telemetryCtx);
 
       if (memories.length === 0) {
         sendFeedback("mem0-search", `**No matches for "${query}"** · ${config.defaultScope} scope`);
@@ -154,13 +159,13 @@ export function registerCommands(
         ctx.ui.notify(`Invalid scope "${raw}". Must be one of: ${validScopes.join(", ")}`, "warning");
         return;
       }
+      if (!requireActive(ctx)) return;
       const scope: Scope = (raw as Scope) || config.defaultScope;
       const filters = resolveSearchFilters(scope, getScopeCtx());
       const result = await mem0.getAll({ filters });
       const memories = result.results ?? [];
 
       if (memories.length === 0) {
-        captureCommandEvent("mem0-tour", { memory_count: 0, scope }, telemetryCtx);
         sendFeedback("mem0-tour", `**No memories in ${scope} scope yet** — store one with \`/mem0-remember\`.`);
         return;
       }
@@ -179,7 +184,6 @@ export function registerCommands(
         lines.push("");
       }
 
-      captureCommandEvent("mem0-tour", { memory_count: memories.length, scope }, telemetryCtx);
       sendFeedback("mem0-tour", lines.join("\n"));
     },
   });
@@ -187,12 +191,12 @@ export function registerCommands(
   pi.registerCommand("mem0-dream", {
     description: "Consolidate memories — merge duplicates, prune stale entries, resolve contradictions",
     handler: async (_args, ctx) => {
+      if (!requireActive(ctx)) return;
       if (!acquireDreamLock(CONFIG_DIR)) {
         ctx.ui.notify("A dream consolidation is already in progress.", "warning");
         return;
       }
 
-      captureCommandEvent("mem0-dream", {}, telemetryCtx);
       pi.sendMessage({ customType: "mem0-dream", content: DREAM_PROTOCOL, display: false }, { triggerTurn: true });
       sendFeedback(
         "mem0-dream",
@@ -209,17 +213,16 @@ export function registerCommands(
         ctx.ui.notify("Usage: /mem0-pin <query>", "warning");
         return;
       }
+      if (!requireActive(ctx)) return;
 
       const memories = await searchMemories(query, config.defaultScope);
 
       if (memories.length === 0) {
-        captureCommandEvent("mem0-pin", { result_count: 0 }, telemetryCtx);
         sendFeedback("mem0-pin", `**No matches for "${query}"** — nothing to pin.`);
         return;
       }
 
       const pinned = (mem: Parameters<typeof formatMemoryCompact>[0]) => {
-        captureCommandEvent("mem0-pin", { pinned: true }, telemetryCtx);
         sendFeedback(
           "mem0-pin",
           ["**Pinned** — protected from dream pruning", `- ${formatMemoryCompact(mem)}`].join("\n"),
@@ -291,7 +294,6 @@ export function registerCommands(
       }
 
       config.defaultScope = scope as Scope;
-      captureCommandEvent("mem0-scope", { scope }, telemetryCtx);
       sendFeedback(
         "mem0-scope",
         [
@@ -303,25 +305,29 @@ export function registerCommands(
   });
 
   pi.registerCommand("mem0-status", {
-    description: "Show connection health, identity, project, and memory count",
+    description: "Show runtime health, identity, project, and memory count",
     handler: async (_args, _ctx) => {
       const scopeCtx = getScopeCtx();
-      const filters = resolveSearchFilters("project", scopeCtx);
+      const active = holder.isActive();
+      const inactiveReason = holder.reason();
 
       let count = 0;
-      let connected = false;
-      try {
-        const result = await mem0.getAll({ filters });
-        count = result.count ?? (result.results ?? []).length;
-        connected = true;
-      } catch {
-        connected = false;
+      if (active) {
+        try {
+          const result = await mem0.getAll({
+            filters: resolveSearchFilters("project", scopeCtx),
+          });
+          count = result.count ?? (result.results ?? []).length;
+        } catch {
+          // fall through with count=0
+        }
       }
 
       const lines = [
         "**Mem0 status**",
         "",
-        `- Connection: ${connected ? "connected" : "disconnected"}`,
+        `- Runtime: ${active ? "active" : `inactive (${inactiveReason})`}`,
+        `- LLM model: ${config.oss?.llm?.model ?? "(not set)"}`,
         `- User: ${scopeCtx.userId}`,
         `- Project: ${scopeCtx.appId}`,
         `- Session: ${scopeCtx.runId}`,
@@ -332,7 +338,6 @@ export function registerCommands(
         `- Dream: ${config.dream.enabled ? "enabled" : "disabled"}`,
       ];
 
-      captureCommandEvent("mem0-status", { connected, memory_count: count }, telemetryCtx);
       sendFeedback("mem0-status", lines.join("\n"));
     },
   });

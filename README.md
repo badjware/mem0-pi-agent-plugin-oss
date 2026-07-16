@@ -1,8 +1,13 @@
-# @mem0/pi-agent-plugin
+# @badjware/mem0-pi-agent-plugin-oss
 
-Persistent semantic memory for [Pi Agent](https://pi.dev), powered by [Mem0](https://mem0.ai).
+Persistent semantic memory for [Pi Agent](https://pi.dev), backed by [mem0ai/oss](https://github.com/mem0ai/mem0) and local SQLite. Local-only fork of `@mem0/pi-agent-plugin` with the cloud client and plugin telemetry removed.
 
-This extension gives Pi Agent long-term memory that persists across sessions, projects, and devices. Memories are automatically captured from conversations and can be searched, managed, and consolidated through slash commands and an agent-accessible tool.
+## Differences from upstream `@mem0/pi-agent-plugin`
+
+- **No cloud dependency.** Storage is entirely local: mem0ai/oss's built-in SQLite-backed `memory` vector store plus a SQLite history store under `~/.pi/agent/memories/`.
+- **No plugin telemetry.** `src/telemetry.ts` and every capture call site were deleted.
+
+See `PATCH_NOTES.md` for the full divergence.
 
 ## Features
 
@@ -17,29 +22,25 @@ This extension gives Pi Agent long-term memory that persists across sessions, pr
 
 ## Setup
 
-### 1. Get an API key
-
-Sign up at [app.mem0.ai](https://app.mem0.ai/dashboard/api-keys) and copy your API key.
-
-### 2. Install
+### 1. Install
 
 ```bash
-pi install npm:@mem0/pi-agent-plugin
+pi install git:github.com/badjware/mem0-pi-agent-plugin-oss
 ```
+
+### 2. Register a local LLM in pi
+
+The plugin uses pi's model registry to find the extraction LLM's credentials and base URL, so the model must already be registered in pi. Follow the instructions in [pi's docs](https://pi.dev/docs/latest/models#model-configuration) to register a LLM provider (e.g., `ollama`, `vllm`, `lmstudio`, etc.) and note the desired `provider/model` identifier.
 
 ### 3. Configure
 
-Set the API key as an environment variable:
-
-```bash
-export MEM0_API_KEY="m0-your-key-here"
-```
-
-Or create a config file at `~/.pi/agent/mem0-config.json`:
+Create `~/.pi/agent/mem0-oss-config.json`:
 
 ```json
 {
-  "apiKey": "m0-your-key-here",
+  "oss": {
+    "llm": { "model": "ollama/qwen3.5:4b" }
+  },
   "userId": "your-username",
   "autoCapture": true,
   "defaultScope": "project",
@@ -54,9 +55,13 @@ Or create a config file at `~/.pi/agent/mem0-config.json`:
 }
 ```
 
-Environment variables (`MEM0_API_KEY`, `MEM0_USER_ID`) override the config file.
+`oss.llm.model` is required. It must be a `provider/model` identifier already registered in pi. Only `ollama`, `openai-completions`-style providers (LM Studio, vLLM, ...), and `anthropic-messages` providers are supported. `MEM0_OSS_LLM_MODEL` overrides the config file, and `MEM0_USER_ID` overrides `userId`.
 
-`searchThreshold` (default `0.3`) is the minimum similarity score (0–1) a memory must reach to count as a match for `/mem0-search`, `/mem0-forget`, and `/mem0-pin`. It is passed to the mem0 search API (along with reranking for higher-precision ordering), so a query with no sufficiently similar memory reports no match instead of returning the closest unrelated memories. Raise it to be stricter; lower it if relevant results are missed.
+Embedder and vector store are not configuratble for now. (fastembed `fast-bge-small-en-v1.5`, mem0's `memory` vector store with SQLite `dbPath`).
+
+Categories are preserved via one extra LLM call per capture against the same `oss.llm.model`, using the same `DEFAULT_CUSTOM_CATEGORIES` taxonomy as upstream.
+
+`searchThreshold` (default `0.3`) is the minimum similarity score (0–1) a memory must reach to count as a match for `/mem0-search`, `/mem0-forget`, and `/mem0-pin`. It is passed to the mem0 search API, so a query with no sufficiently similar memory reports no match instead of returning the closest unrelated memories. Raise it to be stricter; lower it if relevant results are missed.
 
 ## Commands
 
@@ -69,7 +74,7 @@ Environment variables (`MEM0_API_KEY`, `MEM0_USER_ID`) override the config file.
 | `/mem0-dream` | Consolidate — merge duplicates, prune stale, resolve contradictions |
 | `/mem0-pin <query>` | Pin a memory to protect from dream pruning (preserves ID) |
 | `/mem0-scope <scope>` | Change default scope for this session |
-| `/mem0-status` | Connection health, identity, and memory count |
+| `/mem0-status` | Runtime health (active/inactive + reason), identity, and memory count |
 
 ## Skills
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import { loadConfig } from "../src/config/index.ts";
+import { loadConfig } from "../src/oss/config.ts";
 
 vi.mock("node:fs");
 
@@ -9,6 +9,8 @@ describe("loadConfig", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv, HOME: "/home/testuser" };
+    delete process.env.MEM0_USER_ID;
+    delete process.env.MEM0_OSS_LLM_MODEL;
     vi.mocked(fs.existsSync).mockReturnValue(false);
   });
 
@@ -17,43 +19,49 @@ describe("loadConfig", () => {
     vi.restoreAllMocks();
   });
 
-  it("reads config from env vars when no config file exists", () => {
-    process.env.MEM0_API_KEY = "m0-test-key";
-    process.env.MEM0_USER_ID = "env-user";
+  it("returns defaults when no config file exists", () => {
     const config = loadConfig();
-    expect(config.apiKey).toBe("m0-test-key");
-    expect(config.userId).toBe("env-user");
+    expect(config.userId).toBe("");
     expect(config.autoCapture).toBe(true);
     expect(config.defaultScope).toBe("project");
-  });
-
-  it("returns empty apiKey when no key found anywhere", () => {
-    delete process.env.MEM0_API_KEY;
-    const config = loadConfig();
-    expect(config.apiKey).toBe("");
+    expect(config.oss).toBeUndefined();
   });
 
   it("reads config file and merges with defaults", () => {
-    delete process.env.MEM0_API_KEY;
-    delete process.env.MEM0_USER_ID;
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ apiKey: "m0-file-key", userId: "file-user" })
+      JSON.stringify({ userId: "file-user", oss: { llm: { model: "ollama/qwen3.5:4b" } } }),
     );
     const config = loadConfig();
-    expect(config.apiKey).toBe("m0-file-key");
     expect(config.userId).toBe("file-user");
     expect(config.dream.enabled).toBe(true);
     expect(config.dream.minHours).toBe(24);
+    expect(config.oss?.llm.model).toBe("ollama/qwen3.5:4b");
   });
 
-  it("env vars override config file", () => {
-    process.env.MEM0_API_KEY = "m0-env-key";
+  it("MEM0_OSS_LLM_MODEL env var overrides config file", () => {
+    process.env.MEM0_OSS_LLM_MODEL = "ollama/env-model";
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ apiKey: "m0-file-key" })
+      JSON.stringify({ oss: { llm: { model: "ollama/file-model" } } }),
     );
     const config = loadConfig();
-    expect(config.apiKey).toBe("m0-env-key");
+    expect(config.oss?.llm.model).toBe("ollama/env-model");
+  });
+
+  it("MEM0_USER_ID env var overrides config file userId", () => {
+    process.env.MEM0_USER_ID = "env-user";
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ userId: "file-user" }),
+    );
+    expect(loadConfig().userId).toBe("env-user");
+  });
+
+  it("swallows corrupted JSON and returns defaults", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue("{not valid json");
+    const config = loadConfig();
+    expect(config.autoCapture).toBe(true);
   });
 });

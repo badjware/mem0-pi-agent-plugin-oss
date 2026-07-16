@@ -8,14 +8,19 @@ export interface DreamConfig {
   minMemories: number;
 }
 
+export interface OssBlock {
+  llm: { model: string };
+}
+
 export interface Mem0Config {
-  apiKey: string;
   userId: string;
   autoCapture: boolean;
   defaultScope: Scope;
   contextInjection: boolean;
   searchThreshold: number;
   dream: DreamConfig;
+  /** OSS runtime config; required for the runtime to activate. */
+  oss?: OssBlock;
 }
 
 export interface DreamState {

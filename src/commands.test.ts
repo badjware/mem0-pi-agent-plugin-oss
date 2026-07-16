@@ -1,10 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { registerCommands } from "./commands.ts";
 import type { Mem0Config, ScopeContext } from "./types.ts";
-
-vi.mock("./telemetry.ts", () => ({
-  captureCommandEvent: vi.fn(),
-}));
+import { RuntimeHolder } from "./oss/runtime.ts";
 
 vi.mock("./dream/index.ts", () => ({
   acquireDreamLock: vi.fn(() => true),
@@ -50,14 +47,20 @@ function makeCtx(confirmResult = true) {
 }
 
 const defaultConfig: Mem0Config = {
-  apiKey: "test-key",
   userId: "test-user",
   autoCapture: false,
   defaultScope: "project",
   contextInjection: false,
   searchThreshold: 0.3,
   dream: { enabled: false, auto: false, minHours: 24, minSessions: 5, minMemories: 20 },
+  oss: { llm: { model: "ollama/qwen3.5:4b" } },
 };
+
+function activeHolder() {
+  const h = new RuntimeHolder();
+  h.setActive({ client: {} as any });
+  return h;
+}
 
 const scopeCtx: ScopeContext = { userId: "test-user", appId: "test-app", runId: "test-run" };
 
@@ -69,7 +72,7 @@ describe("registerCommands", () => {
     pi = makePi();
     mem0 = makeMem0();
     defaultConfig.defaultScope = "project";
-    registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx);
+    registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, activeHolder());
   });
 
   it("registers all expected commands", () => {
