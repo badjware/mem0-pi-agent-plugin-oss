@@ -49,14 +49,17 @@ files and why:
 - `package.json` — renamed to `@badjware/mem0-pi-agent-plugin-oss`; pinned
   `mem0ai@^3.1.0` (required for FastEmbed embedder); added `fastembed` and
   `better-sqlite3` runtime deps; dropped upstream repo/directory metadata.
-- `src/types.ts` — removed `apiKey` field, added optional `oss?: OssBlock` block.
+- `src/types.ts` — removed `apiKey` field, added optional `oss?: OssBlock` block
+  (`llm.model` required, `embedder?: { provider?, model? }` optional).
 - `src/entry.ts` — swapped cloud `MemoryClient` construction for a `RuntimeHolder`
   and lazy client proxy; runtime is constructed on `session_start` from
   `ctx.modelRegistry` (not in the factory, because model resolution needs the
   session); added `Prefetch`-based recall timeout guard; removed telemetry calls.
 - `src/commands.ts` — accepts a `RuntimeHolder`, guards every command with
-  `requireActive(ctx)`; `/mem0-status` reports the inactive reason; telemetry
-  calls removed.
+  `requireActive(ctx)`; `/mem0-status` reports the inactive reason; added
+  `/mem0-reindex` (re-embeds all memories via `buildRuntimeForReindex`, confirms
+  before running, writes the embedder metadata file, hot-swaps the holder via
+  `RuntimeHolder.setActive()`); telemetry calls removed.
 - `src/capture/index.ts` — accepts a `RuntimeHolder`, skips auto-capture when
   inactive; telemetry calls removed.
 - `src/memory/tools.ts` — telemetry calls removed only. No structural changes.
@@ -69,9 +72,9 @@ Deleted upstream files: `src/telemetry.ts`, `src/telemetry.test.ts`,
 `src/oss/config.ts`), `tests/config.test.ts` (rewritten as `src/oss/*.test.ts`).
 
 Fork-only files (all under `src/oss/` plus root-level docs): `config.ts`,
-`model.ts`, `paths.ts`, `classify.ts`, `client.ts`, `runtime.ts`, `activate.ts`,
-`prefetch.ts`, matching `*.test.ts`, plus `PATCH_NOTES.md`, `CHANGELOG.md`,
-`NOTICE`.
+`model.ts`, `embedder.ts`, `embedder-metadata.ts`, `paths.ts`, `classify.ts`,
+`client.ts`, `runtime.ts`, `activate.ts`, `prefetch.ts`, matching `*.test.ts`,
+plus `PATCH_NOTES.md`, `CHANGELOG.md`, `NOTICE`.
 
 ## Rebasing on upstream
 
@@ -152,12 +155,26 @@ file, `CHANGELOG.md`, and `PATCH_NOTES.md`).
   and the legacy `apiKey` config field are intentionally ignored.
 - Persistence paths (mem0ai/oss built-in `memory` vector store, SQLite-backed):
   `~/.pi/agent/memories/mem0-vectors.db` and `~/.pi/agent/memories/mem0-history.db`.
-- Embedder is hardcoded to `fastembed` (`fast-bge-small-en-v1.5`, 384-dim). The
+- Embedder defaults to `fastembed` (`fast-bge-small-en-v1.5`, 384-dim). The
   model files are cached under `~/.pi/agent/memories/fastembed-cache/`; we
   init `fastembed`'s `FlagEmbedding` ourselves with an explicit `cacheDir` and
   hand mem0 a Langchain-shaped wrapper, because mem0's built-in
   `FastEmbedEmbedder` doesn't forward a `cacheDir` and otherwise defaults to
   `./local_cache` relative to cwd.
+- Optional external embedder: set `oss.embedder.model` to a pi `provider/model`
+  identifier in the config file (or `MEM0_OSS_EMBEDDER_MODEL`).
+  `src/oss/embedder.ts` maps pi's model registry entries to mem0 embedder
+  configs; only `ollama` and `openai-completions`-style providers are
+  supported. When configured, the fastembed langchain shim is skipped and
+  mem0's `EmbedderFactory` is used directly.
+- Embedder identity is persisted to `~/.pi/agent/memories/mem0-embedder.json`
+  (see `src/oss/embedder-metadata.ts`) alongside the vector store. On each
+  activation, `activateRuntime()` compares the current resolved embedder
+  (provider, model, dimension) against this file and refuses to activate on a
+  mismatch. The user must run `/mem0-reindex` to re-embed existing memories with
+  the new embedder. `buildRuntimeForReindex()` skips the comparison and always
+  probes a fresh dimension. Dimension is probed once on first activation (or on
+  reindex) and cached in the metadata file to avoid re-probing on every startup.
 - No reranker is configured. `Memory` is constructed without a `reranker`
   field, so search returns results in raw vector-similarity order. The
   `rerank: true` option in `src/commands.ts` is a leftover from the cloud

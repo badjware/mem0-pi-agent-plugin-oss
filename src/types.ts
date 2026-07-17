@@ -10,6 +10,7 @@ export interface DreamConfig {
 
 export interface OssBlock {
   llm: { model: string };
+  embedder?: { model?: string };
 }
 
 export interface Mem0Config {

@@ -11,6 +11,21 @@ vi.mock("./dream/prompt.ts", () => ({
   DREAM_PROTOCOL: "dream protocol text",
 }));
 
+const buildRuntimeForReindex = vi.fn();
+vi.mock("./oss/activate.ts", () => ({
+  buildRuntimeForReindex: (...args: any[]) => buildRuntimeForReindex(...args),
+}));
+
+const reindexPaths = { embedderMetadataPath: "/fake/memories/mem0-embedder.json" };
+vi.mock("./oss/paths.ts", () => ({
+  resolveStoragePaths: vi.fn(() => reindexPaths),
+}));
+
+const writeMetadata = vi.fn();
+vi.mock("./oss/embedder-metadata.ts", () => ({
+  writeMetadata: (...args: any[]) => writeMetadata(...args),
+}));
+
 function makeMem0() {
   return {
     search: vi.fn(),
@@ -37,6 +52,7 @@ function makePi() {
 function makeCtx(confirmResult = true) {
   return {
     hasUI: true,
+    modelRegistry: {} as any,
     ui: {
       notify: vi.fn(),
       confirm: vi.fn(async () => confirmResult),
@@ -85,6 +101,7 @@ describe("registerCommands", () => {
     expect(names).toContain("mem0-pin");
     expect(names).toContain("mem0-scope");
     expect(names).toContain("mem0-status");
+    expect(names).toContain("mem0-reindex");
   });
 
   describe("/mem0-forget", () => {
@@ -488,6 +505,218 @@ describe("registerCommands", () => {
           display: true,
         }),
       );
+    });
+  });
+
+  describe("/mem0-status", () => {
+    it("shows the configured embedder model", async () => {
+      const ctx = makeCtx();
+      const config: Mem0Config = {
+        ...defaultConfig,
+        oss: {
+          llm: defaultConfig.oss!.llm,
+          embedder: { model: "databricks/text-embedding-3-small" },
+        },
+      };
+      mem0.getAll.mockResolvedValue({ results: [] });
+      pi = makePi();
+      registerCommands(pi as any, mem0, config, () => scopeCtx, activeHolder());
+
+      await pi._invoke("mem0-status", "", ctx);
+
+      expect(pi.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customType: "mem0-status",
+          content: expect.stringContaining("Embedder model: databricks/text-embedding-3-small"),
+          display: true,
+        }),
+      );
+    });
+
+    it("shows the fastembed default when no external embedder is configured", async () => {
+      const ctx = makeCtx();
+      mem0.getAll.mockResolvedValue({ results: [] });
+
+      await pi._invoke("mem0-status", "", ctx);
+
+      expect(pi.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("Embedder model: fastembed/fast-bge-small-en-v1.5"),
+        }),
+      );
+    });
+  });
+
+  describe("/mem0-reindex", () => {
+    beforeEach(() => {
+      buildRuntimeForReindex.mockReset();
+      writeMetadata.mockReset();
+    });
+
+    it("reindexes memories, writes metadata, and hot-swaps the holder on the happy path", async () => {
+      const ctx = makeCtx(true);
+      const client = {
+        getAll: vi.fn(async () => ({
+          results: [
+            { id: "id-1", memory: "likes tea" },
+            { id: "id-2", memory: "uses vim" },
+            { id: "id-3", memory: "prefers dark mode" },
+          ],
+        })),
+        update: vi.fn(async () => ({})),
+      };
+      const metadata = { provider: "openai", model: "text-embedding-3-small", dimension: 4 };
+      buildRuntimeForReindex.mockResolvedValue({ client, metadata });
+      const holder = activeHolder();
+      const setActiveSpy = vi.spyOn(holder, "setActive");
+      pi = makePi();
+      registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, holder);
+
+      await pi._invoke("mem0-reindex", "", ctx);
+
+      expect(ctx.ui.confirm).toHaveBeenCalled();
+      expect(client.getAll).toHaveBeenCalledTimes(1);
+      expect(client.update).toHaveBeenCalledTimes(3);
+      expect(client.update).toHaveBeenNthCalledWith(1, "id-1", { text: "likes tea" });
+      expect(client.update).toHaveBeenNthCalledWith(2, "id-2", { text: "uses vim" });
+      expect(client.update).toHaveBeenNthCalledWith(3, "id-3", { text: "prefers dark mode" });
+      expect(writeMetadata).toHaveBeenCalledWith(reindexPaths.embedderMetadataPath, metadata);
+      expect(setActiveSpy).toHaveBeenCalledWith({ client });
+      expect(pi.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ customType: "mem0-reindex", content: expect.stringContaining("Reindex complete") }),
+      );
+    });
+
+    it("cancels without updating when the user declines confirmation", async () => {
+      const ctx = makeCtx(false);
+      const client = {
+        getAll: vi.fn(async () => ({ results: [{ id: "id-1", memory: "likes tea" }] })),
+        update: vi.fn(async () => ({})),
+      };
+      buildRuntimeForReindex.mockResolvedValue({
+        client,
+        metadata: { provider: "openai", model: "text-embedding-3-small", dimension: 4 },
+      });
+      const holder = activeHolder();
+      const setActiveSpy = vi.spyOn(holder, "setActive");
+      pi = makePi();
+      registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, holder);
+
+      await pi._invoke("mem0-reindex", "", ctx);
+
+      expect(client.update).not.toHaveBeenCalled();
+      expect(writeMetadata).not.toHaveBeenCalled();
+      expect(setActiveSpy).not.toHaveBeenCalled();
+    });
+
+    it("still shows the confirmation prompt when there are no memories", async () => {
+      const ctx = makeCtx(true);
+      const client = {
+        getAll: vi.fn(async () => ({ results: [] })),
+        update: vi.fn(async () => ({})),
+      };
+      const metadata = { provider: "openai", model: "text-embedding-3-small", dimension: 4 };
+      buildRuntimeForReindex.mockResolvedValue({ client, metadata });
+      const holder = activeHolder();
+      pi = makePi();
+      registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, holder);
+
+      await pi._invoke("mem0-reindex", "", ctx);
+
+      expect(ctx.ui.confirm).toHaveBeenCalled();
+      expect(writeMetadata).toHaveBeenCalledWith(reindexPaths.embedderMetadataPath, metadata);
+    });
+
+    it("notifies and aborts when getAll fails", async () => {
+      const ctx = makeCtx(true);
+      const client = {
+        getAll: vi.fn(async () => {
+          throw new Error("connection refused");
+        }),
+        update: vi.fn(async () => ({})),
+      };
+      buildRuntimeForReindex.mockResolvedValue({
+        client,
+        metadata: { provider: "openai", model: "text-embedding-3-small", dimension: 4 },
+      });
+      const holder = activeHolder();
+      pi = makePi();
+      registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, holder);
+
+      await pi._invoke("mem0-reindex", "", ctx);
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("connection refused"), "error");
+      expect(ctx.ui.confirm).not.toHaveBeenCalled();
+      expect(writeMetadata).not.toHaveBeenCalled();
+    });
+
+    it("aborts without writing metadata when a memory is missing its text", async () => {
+      const ctx = makeCtx(true);
+      const client = {
+        getAll: vi.fn(async () => ({ results: [{ id: "id-1", memory: undefined }] })),
+        update: vi.fn(async () => ({})),
+      };
+      buildRuntimeForReindex.mockResolvedValue({
+        client,
+        metadata: { provider: "openai", model: "text-embedding-3-small", dimension: 4 },
+      });
+      const holder = activeHolder();
+      pi = makePi();
+      registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, holder);
+
+      await pi._invoke("mem0-reindex", "", ctx);
+
+      expect(client.update).not.toHaveBeenCalled();
+      expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("id-1"), "error");
+      expect(writeMetadata).not.toHaveBeenCalled();
+    });
+
+    it("runs from a mismatch-deactivated holder and still succeeds", async () => {
+      const ctx = makeCtx(true);
+      const client = {
+        getAll: vi.fn(async () => ({ results: [{ id: "id-1", memory: "likes tea" }] })),
+        update: vi.fn(async () => ({})),
+      };
+      const metadata = { provider: "openai", model: "text-embedding-3-small", dimension: 4 };
+      buildRuntimeForReindex.mockResolvedValue({ client, metadata });
+      const holder = new RuntimeHolder();
+      holder.setInactive("embedder configuration changed; run /mem0-reindex");
+      pi = makePi();
+      registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, holder);
+
+      await pi._invoke("mem0-reindex", "", ctx);
+
+      expect(client.update).toHaveBeenCalledTimes(1);
+      expect(holder.isActive()).toBe(true);
+    });
+
+    it("notifies and aborts without writing metadata when a memory update fails", async () => {
+      const ctx = makeCtx(true);
+      const client = {
+        getAll: vi.fn(async () => ({
+          results: [
+            { id: "id-1", memory: "likes tea" },
+            { id: "id-2", memory: "uses vim" },
+          ],
+        })),
+        update: vi.fn(async (id: string) => {
+          if (id === "id-2") throw new Error("connection refused");
+        }),
+      };
+      buildRuntimeForReindex.mockResolvedValue({
+        client,
+        metadata: { provider: "openai", model: "text-embedding-3-small", dimension: 4 },
+      });
+      const holder = activeHolder();
+      const setActiveSpy = vi.spyOn(holder, "setActive");
+      pi = makePi();
+      registerCommands(pi as any, mem0, defaultConfig, () => scopeCtx, holder);
+
+      await pi._invoke("mem0-reindex", "", ctx);
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("id-2"), "error");
+      expect(writeMetadata).not.toHaveBeenCalled();
+      expect(setActiveSpy).not.toHaveBeenCalled();
     });
   });
 

@@ -8,6 +8,9 @@ import { DREAM_PROTOCOL } from "./dream/prompt.ts";
 import { acquireDreamLock } from "./dream/index.ts";
 import { CONFIG_DIR } from "./oss/config.ts";
 import type { RuntimeHolder } from "./oss/runtime.ts";
+import { buildRuntimeForReindex } from "./oss/activate.ts";
+import { resolveStoragePaths } from "./oss/paths.ts";
+import { writeMetadata } from "./oss/embedder-metadata.ts";
 
 const SEARCH_TOP_K = 10;
 
@@ -304,6 +307,91 @@ export function registerCommands(
     },
   });
 
+  pi.registerCommand("mem0-reindex", {
+    description: "Re-embed all memories with the currently configured embedder (needed after an embedder swap)",
+    handler: async (_args, ctx) => {
+      let runtime: Awaited<ReturnType<typeof buildRuntimeForReindex>>;
+      try {
+        runtime = await buildRuntimeForReindex(config, ctx.modelRegistry);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`[mem0] reindex failed to build runtime: ${reason}`, "error");
+        return;
+      }
+      const { client, metadata } = runtime;
+
+      let memories: Awaited<ReturnType<typeof client.getAll>>["results"];
+      try {
+        memories = (await client.getAll({
+          filters: { user_id: getScopeCtx().userId },
+          topK: 1_000_000,
+        })).results;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`[mem0] reindex failed to list memories: ${reason}`, "error");
+        return;
+      }
+
+      const confirmed = await ctx.ui.confirm(
+        "Reindex all memories?",
+        `This re-embeds ${pluralize(memories.length, "memory", "memories")} with ${metadata.provider}/${metadata.model}. It cannot be undone.`,
+      );
+      if (!confirmed) {
+        sendFeedback("mem0-reindex", "**Cancelled** — no memories were reindexed.");
+        return;
+      }
+
+      const total = memories.length;
+      const barWidth = 30;
+      const renderProgress = (done: number): void => {
+        const filled = total === 0 ? barWidth : Math.round((done / total) * barWidth);
+        const bar = "\u2588".repeat(filled) + "\u2591".repeat(barWidth - filled);
+        const pct = total === 0 ? 100 : Math.round((done / total) * 100);
+        ctx.ui.setWidget?.("mem0-reindex-progress", [
+          `Reindexing memories: [${bar}] ${done}/${total} (${pct}%)`,
+        ]);
+      };
+      const updateEvery = Math.max(1, Math.floor(total / 100));
+
+      renderProgress(0);
+      try {
+        for (let i = 0; i < total; i++) {
+          const mem = memories[i];
+          try {
+            if (mem.memory == null) {
+              throw new Error(`memory ${mem.id} has no text (missing 'memory' field)`);
+            }
+            await client.update(mem.id, { text: mem.memory });
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            ctx.ui.notify(
+              `[mem0] reindex failed on memory ${mem.id} (${i + 1}/${total}): ${reason}`,
+              "error",
+            );
+            return;
+          }
+          if ((i + 1) % updateEvery === 0 || i === total - 1) {
+            renderProgress(i + 1);
+          }
+        }
+      } finally {
+        ctx.ui.setWidget?.("mem0-reindex-progress", undefined);
+      }
+
+      const paths = resolveStoragePaths();
+      writeMetadata(paths.embedderMetadataPath, metadata);
+      holder.setActive({ client });
+
+      sendFeedback(
+        "mem0-reindex",
+        [
+          `**Reindex complete** — ${pluralize(memories.length, "memory", "memories")} re-embedded`,
+          `- Embedder: ${metadata.provider} / ${metadata.model} (dimension ${metadata.dimension})`,
+        ].join("\n"),
+      );
+    },
+  });
+
   pi.registerCommand("mem0-status", {
     description: "Show runtime health, identity, project, and memory count",
     handler: async (_args, _ctx) => {
@@ -311,7 +399,7 @@ export function registerCommands(
       const active = holder.isActive();
       const inactiveReason = holder.reason();
 
-      let count = 0;
+      let count: number | null = null;
       if (active) {
         try {
           const result = await mem0.getAll({
@@ -319,7 +407,7 @@ export function registerCommands(
           });
           count = result.count ?? (result.results ?? []).length;
         } catch {
-          // fall through with count=0
+          // fall through with count=null
         }
       }
 
@@ -328,12 +416,13 @@ export function registerCommands(
         "",
         `- Runtime: ${active ? "active" : `inactive (${inactiveReason})`}`,
         `- LLM model: ${config.oss?.llm?.model ?? "(not set)"}`,
+        `- Embedder model: ${config.oss?.embedder?.model ?? "fastembed/fast-bge-small-en-v1.5"}`,
         `- User: ${scopeCtx.userId}`,
         `- Project: ${scopeCtx.appId}`,
         `- Session: ${scopeCtx.runId}`,
         `- Default scope: ${config.defaultScope}`,
         `- Search relevance threshold: ${config.searchThreshold}`,
-        `- Project memories: ${count}`,
+        `- Project memories: ${count ?? "unknown (runtime inactive)"}`,
         `- Auto-capture: ${config.autoCapture ? "on" : "off"}`,
         `- Dream: ${config.dream.enabled ? "enabled" : "disabled"}`,
       ];

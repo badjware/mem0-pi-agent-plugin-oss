@@ -36,6 +36,7 @@ describe("resolveStoragePaths", () => {
     expect(paths.vectorDbPath).toBe(path.join(paths.memoriesDir, "mem0-vectors.db"));
     expect(paths.historyDbPath).toBe(path.join(paths.memoriesDir, "mem0-history.db"));
     expect(paths.fastembedCacheDir).toBe(path.join(paths.memoriesDir, "fastembed-cache"));
+    expect(paths.embedderMetadataPath).toBe(path.join(paths.memoriesDir, "mem0-embedder.json"));
     expect(mkdir).toHaveBeenCalledWith(paths.memoriesDir, { recursive: true });
   });
 });

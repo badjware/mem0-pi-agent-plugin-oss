@@ -17,7 +17,7 @@ See `PATCH_NOTES.md` for the full divergence.
 - **Monorepo-aware** — uses git root for project detection, consistent app_id across subdirectories
 - **Dream consolidation** — merges duplicates, resolves contradictions, prunes stale entries
 - **Confirmation dialogs** — destructive commands ask before acting
-- **8 slash commands** — essential memory management from the command line
+- **9 slash commands** — essential memory management from the command line
 - **Agent tool** — `mem0_memory` tool lets the agent search and store memories autonomously
 
 ## Setup
@@ -57,7 +57,26 @@ Create `~/.pi/agent/mem0-oss-config.json`:
 
 `oss.llm.model` is required. It must be a `provider/model` identifier already registered in pi. Only `ollama`, `openai-completions`-style providers (LM Studio, vLLM, ...), and `anthropic-messages` providers are supported. `MEM0_OSS_LLM_MODEL` overrides the config file, and `MEM0_USER_ID` overrides `userId`.
 
-Embedder and vector store are not configuratble for now. (fastembed `fast-bge-small-en-v1.5`, mem0's `memory` vector store with SQLite `dbPath`).
+Vector store is not configurable for now (mem0's `memory` vector store, SQLite-backed).
+
+By default the plugin embeds with `fastembed` (`fast-bge-small-en-v1.5`, 384 dimensions), bundled and cached locally under `~/.pi/agent/memories/fastembed-cache/`. No config is required for this default.
+
+To use an external embedder instead, set `oss.embedder` in the config file:
+
+```json
+{
+  "oss": {
+    "llm": { "model": "ollama/qwen3.5:4b" },
+    "embedder": { "model": "ollama/nomic-embed-text" }
+  }
+}
+```
+
+`oss.embedder.model` must use the same `provider/model` syntax as `oss.llm.model`; its provider must be registered in pi, the model does not. `MEM0_OSS_EMBEDDER_MODEL` overrides the config file. Supported providers:
+* `ollama`
+* `openai-completions`
+
+The embedder's identity (`provider`, `model`) and its embedding dimension are cached in an embedder metadata file at `~/.pi/agent/memories/mem0-embedder.json`. If the embedder doesn't match (e.g. `oss.embedder` has changed), the plugin refuses to activate. Existing memories must be re-embedded to match the new embedder with `/mem0-reindex` before the plugin activates.
 
 Categories are preserved via one extra LLM call per capture against the same `oss.llm.model`, using the same `DEFAULT_CUSTOM_CATEGORIES` taxonomy as upstream.
 
@@ -75,6 +94,7 @@ Categories are preserved via one extra LLM call per capture against the same `os
 | `/mem0-pin <query>` | Pin a memory to protect from dream pruning (preserves ID) |
 | `/mem0-scope <scope>` | Change default scope for this session |
 | `/mem0-status` | Runtime health (active/inactive + reason), identity, and memory count |
+| `/mem0-reindex` | Re-embed all memories with the currently configured embedder (with confirmation), then hot-swap the runtime |
 
 ## Skills
 
@@ -125,7 +145,7 @@ pi-agent-plugin/
 ├── src/
 │   ├── entry.ts          # Extension entry point
 │   ├── index.ts          # Barrel exports
-│   ├── commands.ts       # 8 slash commands
+│   ├── commands.ts       # 9 slash commands
 │   ├── prompt.ts         # System prompt injection (MEMORY_POLICY)
 │   ├── types.ts          # Shared interfaces and categories
 │   ├── telemetry.ts      # PostHog telemetry (batched, PII-safe)

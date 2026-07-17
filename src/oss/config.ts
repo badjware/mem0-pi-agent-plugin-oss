@@ -24,6 +24,12 @@ const DEFAULT_CONFIG: Mem0Config = {
   dream: DEFAULT_DREAM,
 };
 
+/** Empty string and null both count as "unset", matching the file-config JSON round-trip. */
+function normalizeStr(value: unknown): string | undefined {
+  if (typeof value !== "string" || value === "") return undefined;
+  return value;
+}
+
 /**
  * Load the OSS plugin config from ~/.pi/agent/mem0-oss-config.json, merged with
  * defaults. Malformed JSON is swallowed and defaults are used, matching upstream
@@ -61,6 +67,20 @@ export function loadConfig(): Mem0Config {
       ...(config.oss ?? {}),
       llm: { model: process.env.MEM0_OSS_LLM_MODEL },
     };
+  }
+
+  const embedderModel =
+    normalizeStr(process.env.MEM0_OSS_EMBEDDER_MODEL) ??
+    normalizeStr(fileConfig.oss?.embedder?.model);
+
+  if (embedderModel !== undefined) {
+    config.oss = {
+      ...(config.oss ?? {}),
+      embedder: { model: embedderModel },
+    } as Mem0Config["oss"];
+  } else if (config.oss?.embedder) {
+    const { embedder, ...rest } = config.oss;
+    config.oss = rest as Mem0Config["oss"];
   }
 
   return config;

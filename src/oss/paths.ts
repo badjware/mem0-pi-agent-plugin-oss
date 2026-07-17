@@ -14,6 +14,7 @@ export interface ResolvedStoragePaths {
   vectorDbPath: string;
   historyDbPath: string;
   fastembedCacheDir: string;
+  embedderMetadataPath: string;
 }
 
 /**
@@ -29,5 +30,6 @@ export function resolveStoragePaths(): ResolvedStoragePaths {
     vectorDbPath: path.join(memoriesDir, "mem0-vectors.db"),
     historyDbPath: path.join(memoriesDir, "mem0-history.db"),
     fastembedCacheDir: path.join(memoriesDir, "fastembed-cache"),
+    embedderMetadataPath: path.join(memoriesDir, "mem0-embedder.json"),
   };
 }
