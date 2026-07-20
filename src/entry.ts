@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type MemoryClient from "mem0ai";
 import { loadConfig, CONFIG_DIR } from "./oss/config.ts";
 import { detectAppId, detectRunId, resolveSearchFilters } from "./memory/scoping.ts";
 import { formatMemoryList } from "./memory/formatting.ts";
@@ -18,10 +19,13 @@ import {
 import { RuntimeHolder, makeLazyClient } from "./oss/runtime.ts";
 import { activateRuntime } from "./oss/activate.ts";
 import { Prefetch } from "./oss/prefetch.ts";
+import { UNBOUNDED_TOP_K } from "./oss/constants.ts";
 import * as os from "node:os";
 import type { ScopeContext } from "./types.ts";
 
 const RECALL_TIMEOUT_MS = 1500;
+
+type OssGetAllOptions = NonNullable<Parameters<MemoryClient["getAll"]>[0]> & { topK: number };
 
 export function resolveUserId(configUserId: string): string {
   if (configUserId) return configUserId;
@@ -130,7 +134,11 @@ export default function mem0Extension(pi: ExtensionAPI): void {
       if (gates.proceed) {
         try {
           const filters = resolveSearchFilters("project", scopeCtx);
-          const result = await mem0.getAll({ filters });
+          const options: OssGetAllOptions = {
+            filters,
+            topK: UNBOUNDED_TOP_K,
+          };
+          const result = await mem0.getAll(options);
           const count = result.count ?? (result.results ?? []).length;
           dreamChecked = true;
           const memGate = checkMemoryGate(count, config.dream);

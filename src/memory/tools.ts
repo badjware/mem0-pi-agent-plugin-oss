@@ -6,6 +6,7 @@ import type { Scope, ScopeContext, Mem0Config } from "../types.ts";
 import { DEFAULT_CUSTOM_CATEGORIES } from "../types.ts";
 import { resolveSearchFilters, resolveAddParams } from "./scoping.ts";
 import { formatMemoryList } from "./formatting.ts";
+import { UNBOUNDED_TOP_K } from "../oss/constants.ts";
 
 interface MemoryResult {
   message?: string;
@@ -15,6 +16,8 @@ interface MemoryResult {
 
 const MAX_OUTPUT_LINES = 200;
 const MAX_OUTPUT_BYTES = 50_000;
+
+type OssGetAllOptions = NonNullable<Parameters<MemoryClient["getAll"]>[0]> & { topK: number };
 
 function truncateOutput(text: string): string {
   const lines = text.split("\n");
@@ -83,7 +86,8 @@ export function buildToolExecute(
       case "get_all": {
         if (signal?.aborted) throw new Error("Cancelled");
         const filters = resolveSearchFilters(scope, scopeCtx);
-        const result = await mem0.getAll({ filters });
+        const options: OssGetAllOptions = { filters, topK: UNBOUNDED_TOP_K };
+        const result = await mem0.getAll(options);
         const memories = result.results ?? [];
         return {
           content: [{ type: "text" as const, text: truncateOutput(formatMemoryList(memories)) }],

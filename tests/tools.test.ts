@@ -27,6 +27,15 @@ describe("buildToolExecute", () => {
     });
   });
 
+  it("get_all requests every memory in scope", async () => {
+    mockMem0.getAll.mockResolvedValue({ results: [] });
+    await execute({ action: "get_all" });
+    expect(mockMem0.getAll).toHaveBeenCalledWith({
+      filters: { user_id: "testuser", app_id: "testproject" },
+      topK: 1_000_000,
+    });
+  });
+
   it("add calls mem0.add with customCategories and entity params", async () => {
     mockMem0.add.mockResolvedValue([{ id: "new-id", memory: "test" }]);
     await execute({ action: "add", content: "User likes tabs" });

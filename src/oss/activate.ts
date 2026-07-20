@@ -4,9 +4,7 @@ import { resolveOssLlm } from "./model.ts";
 import { resolveOssEmbedder } from "./embedder.ts";
 import { resolveStoragePaths } from "./paths.ts";
 import { readMetadata, writeMetadata, compareMetadata, type EmbedderMetadata } from "./embedder-metadata.ts";
-
-const FASTEMBED_DIMS = 384;
-const FASTEMBED_MODEL = "fast-bge-small-en-v1.5";
+import { FASTEMBED_DIMENSION, FASTEMBED_MODEL, FASTEMBED_PROVIDER } from "./constants.ts";
 
 /**
  * Build the mem0ai/oss Memory instance and wrap it in the plugin adapter,
@@ -71,8 +69,8 @@ async function buildRuntime(
     };
 
     embedderBlock = { provider: "langchain", config: { model: fastembedLangchainShim } };
-    currentIdentity = { provider: "fastembed", model: FASTEMBED_MODEL };
-    dimension = FASTEMBED_DIMS;
+    currentIdentity = { provider: FASTEMBED_PROVIDER, model: FASTEMBED_MODEL };
+    dimension = FASTEMBED_DIMENSION;
   } else {
     embedderBlock = { provider: resolvedEmbedder.provider, config: resolvedEmbedder.config };
     currentIdentity = { provider: resolvedEmbedder.provider, model: resolvedEmbedder.model };

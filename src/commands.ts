@@ -11,8 +11,11 @@ import type { RuntimeHolder } from "./oss/runtime.ts";
 import { buildRuntimeForReindex } from "./oss/activate.ts";
 import { resolveStoragePaths } from "./oss/paths.ts";
 import { writeMetadata } from "./oss/embedder-metadata.ts";
+import { FASTEMBED_MODEL, FASTEMBED_PROVIDER, UNBOUNDED_TOP_K } from "./oss/constants.ts";
 
 const SEARCH_TOP_K = 10;
+
+type OssGetAllOptions = NonNullable<Parameters<MemoryClient["getAll"]>[0]> & { topK: number };
 
 export function registerCommands(
   pi: ExtensionAPI,
@@ -165,7 +168,8 @@ export function registerCommands(
       if (!requireActive(ctx)) return;
       const scope: Scope = (raw as Scope) || config.defaultScope;
       const filters = resolveSearchFilters(scope, getScopeCtx());
-      const result = await mem0.getAll({ filters });
+      const options: OssGetAllOptions = { filters, topK: UNBOUNDED_TOP_K };
+      const result = await mem0.getAll(options);
       const memories = result.results ?? [];
 
       if (memories.length === 0) {
@@ -324,7 +328,7 @@ export function registerCommands(
       try {
         memories = (await client.getAll({
           filters: { user_id: getScopeCtx().userId },
-          topK: 1_000_000,
+          topK: UNBOUNDED_TOP_K,
         })).results;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
@@ -402,9 +406,11 @@ export function registerCommands(
       let count: number | null = null;
       if (active) {
         try {
-          const result = await mem0.getAll({
+          const options: OssGetAllOptions = {
             filters: resolveSearchFilters("project", scopeCtx),
-          });
+            topK: UNBOUNDED_TOP_K,
+          };
+          const result = await mem0.getAll(options);
           count = result.count ?? (result.results ?? []).length;
         } catch {
           // fall through with count=null
@@ -416,7 +422,7 @@ export function registerCommands(
         "",
         `- Runtime: ${active ? "active" : `inactive (${inactiveReason})`}`,
         `- LLM model: ${config.oss?.llm?.model ?? "(not set)"}`,
-        `- Embedder model: ${config.oss?.embedder?.model ?? "fastembed/fast-bge-small-en-v1.5"}`,
+        `- Embedder model: ${config.oss?.embedder?.model ?? `${FASTEMBED_PROVIDER}/${FASTEMBED_MODEL}`}`,
         `- User: ${scopeCtx.userId}`,
         `- Project: ${scopeCtx.appId}`,
         `- Session: ${scopeCtx.runId}`,

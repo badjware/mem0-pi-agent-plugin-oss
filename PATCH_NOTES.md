@@ -12,12 +12,12 @@ Any file listed below is the fork's edit surface into upstream. Everything else 
 - `package.json` — renamed to `@badjware/mem0-pi-agent-plugin-oss`; pin `mem0ai@^3.1.0`; add `fastembed`, `better-sqlite3`; drop upstream repo/directory metadata
 - `README.md` — document the local-only OSS runtime, including its LLM and embedder configuration
 - `src/types.ts` — remove `apiKey` field, add optional `oss?: OssBlock` block (`llm.model` required, `embedder.model` optional)
-- `src/entry.ts` — swap cloud `MemoryClient` construction for `RuntimeHolder` + lazy proxy; construct OSS runtime on `session_start` from `ctx.modelRegistry`; add Prefetch-based recall timeout guard; remove telemetry calls
-- `src/commands.ts` — accept `RuntimeHolder`, guard every command with `requireActive(ctx)`; rewrite `/mem0-status` to report the inactive reason and configured embedder model; add `/mem0-reindex` (re-embeds all memories with `buildRuntimeForReindex`, confirms before a destructive reindex, writes the embedder metadata file, hot-swaps the holder via the existing `RuntimeHolder.setActive()`); remove telemetry calls
+- `src/entry.ts` — swap cloud `MemoryClient` construction for `RuntimeHolder` + lazy proxy; construct OSS runtime on `session_start` from `ctx.modelRegistry`; add Prefetch-based recall timeout guard; request an effectively unbounded result set for the automatic Dream memory-count gate; remove telemetry calls
+- `src/commands.ts` — accept `RuntimeHolder`, guard every command with `requireActive(ctx)`; rewrite `/mem0-status` to report the inactive reason and configured embedder model; add `/mem0-reindex` (re-embeds all memories with `buildRuntimeForReindex`, confirms before a destructive reindex, writes the embedder metadata file, hot-swaps the holder via the existing `RuntimeHolder.setActive()`); request an effectively unbounded result set for `/mem0-tour` and the `/mem0-status` project-memory count; remove telemetry calls
 - `src/capture/index.ts` — accept `RuntimeHolder` and skip auto-capture when inactive; remove telemetry calls; drop `await` on `mem0.add` so local-LLM fact extraction runs in the background instead of blocking the next prompt
-- `src/memory/tools.ts` — remove telemetry calls
+- `src/memory/tools.ts` — remove telemetry calls; request an effectively unbounded result set for the `get_all` tool action so its documented "list everything" behavior is not limited by the OSS default of 20
 - `src/index.ts` — remove telemetry export; add OSS module exports
-- `src/commands.test.ts` — remove telemetry mock; add `RuntimeHolder`; drop `apiKey`; add `/mem0-status` embedder model coverage and `/mem0-reindex` smoke tests (mocked `buildRuntimeForReindex`, `paths.ts`, `embedder-metadata.ts`)
+- `src/commands.test.ts` — remove telemetry mock; add `RuntimeHolder`; drop `apiKey`; add `/mem0-status` embedder model and unbounded-count coverage, `/mem0-tour` unbounded-list coverage, and `/mem0-reindex` smoke tests (mocked `buildRuntimeForReindex`, `paths.ts`, `embedder-metadata.ts`)
 - `src/entry.test.ts` — replace `buildRecallContext` with `formatRecallContext`; add Prefetch coverage
 
 ## Deleted upstream files
@@ -40,6 +40,7 @@ Any file listed below is the fork's edit surface into upstream. Everything else 
 - `src/oss/runtime.ts` — `RuntimeHolder` + lazy client proxy
 - `src/oss/activate.ts` — runtime construction routine invoked from `session_start`; resolves the embedder (fastembed default or configured), probes/persists/validates its dimension via the metadata file, and skips the fastembed langchain shim when an external embedder is configured; internals split into a shared `buildRuntime()` and two exports: `activateRuntime()` (compares against cached metadata, throws on mismatch) and `buildRuntimeForReindex()` (used by `/mem0-reindex`, skips the comparison and always probes a fresh dimension)
 - `src/oss/prefetch.ts` — two-phase prefetch with timeout race
+- `src/oss/constants.ts` — shared effectively unbounded `getAll` retrieval limit and FastEmbed default identity
 - `src/oss/*.test.ts` — coverage for the fork-specific modules
 - `PATCH_NOTES.md`, `NOTICE`
 

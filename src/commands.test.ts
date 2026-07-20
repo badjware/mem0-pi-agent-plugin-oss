@@ -498,6 +498,10 @@ describe("registerCommands", () => {
 
       await pi._invoke("mem0-tour", "", ctx);
 
+      expect(mem0.getAll).toHaveBeenCalledWith({
+        filters: { user_id: "test-user", app_id: "test-app" },
+        topK: 1_000_000,
+      });
       expect(pi.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           customType: "mem0-tour",
@@ -544,6 +548,18 @@ describe("registerCommands", () => {
           content: expect.stringContaining("Embedder model: fastembed/fast-bge-small-en-v1.5"),
         }),
       );
+    });
+
+    it("requests all project memories for the count", async () => {
+      const ctx = makeCtx();
+      mem0.getAll.mockResolvedValue({ results: [] });
+
+      await pi._invoke("mem0-status", "", ctx);
+
+      expect(mem0.getAll).toHaveBeenCalledWith({
+        filters: { user_id: "test-user", app_id: "test-app" },
+        topK: 1_000_000,
+      });
     });
   });
 
