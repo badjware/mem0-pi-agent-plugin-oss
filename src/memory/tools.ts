@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import type MemoryClient from "mem0ai";
 import type { Scope, ScopeContext, Mem0Config } from "../types.ts";
 import { DEFAULT_CUSTOM_CATEGORIES } from "../types.ts";
@@ -44,6 +45,14 @@ interface ToolParams {
   content?: string;
   memory_id?: string;
   scope?: Scope;
+}
+
+export function formatToolCall(toolName: string, params: object): string {
+  const arguments_ = Object.entries(params)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${key === "action" ? value : JSON.stringify(value)}`);
+
+  return `${toolName} ${arguments_.join(" ")}`;
 }
 
 export function buildToolExecute(
@@ -194,6 +203,9 @@ export function registerMemoryTool(
       const scopeCtx = getScopeCtx();
       const exec = buildToolExecute(mem0, scopeCtx, config.defaultScope);
       return await exec(params as ToolParams, signal);
+    },
+    renderCall(params, theme) {
+      return new Text(theme.fg("toolTitle", formatToolCall("mem0_memory", params)), 0, 0);
     },
   });
 }

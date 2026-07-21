@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { buildToolExecute } from "../src/memory/tools.ts";
+import { buildToolExecute, formatToolCall } from "../src/memory/tools.ts";
 import type { ScopeContext } from "../src/types.ts";
 
 const mockMem0 = {
@@ -15,6 +15,28 @@ const scopeCtx: ScopeContext = {
   appId: "testproject",
   runId: "session123",
 };
+
+describe("formatToolCall", () => {
+  it("renders the supplied tool name and explicitly named arguments", () => {
+    expect(formatToolCall("mem0_memory", {
+      action: "search",
+      query: "Pi UI tool arguments",
+      scope: "global",
+    })).toBe('mem0_memory action=search query="Pi UI tool arguments" scope="global"');
+  });
+
+  it("uses JSON quoting for argument values", () => {
+    expect(formatToolCall("example", {
+      content: "User prefers\nconcise replies",
+      count: 2,
+    })).toBe('example content="User prefers\\nconcise replies" count=2');
+  });
+
+  it("omits arguments that were not supplied", () => {
+    expect(formatToolCall("example", { action: "get_all", scope: undefined }))
+      .toBe("example action=get_all");
+  });
+});
 
 describe("buildToolExecute", () => {
   const execute = buildToolExecute(mockMem0 as any, scopeCtx, "project");
